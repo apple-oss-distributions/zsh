@@ -37,12 +37,15 @@
 #endif
 #endif
 
-#if defined(__linux) || defined(__GNU__) || defined(__GLIBC__)
+#if defined(__linux) || defined(__GNU__) || defined(__GLIBC__) || defined(LIBC_MUSL)
 /*
  * Turn on numerous extensions.
  * This is in order to get the functions for manipulating /dev/ptmx.
  */
 #define _GNU_SOURCE 1
+#endif
+#ifdef LIBC_MUSL
+#define _POSIX_C_SOURCE 200809L
 #endif
 
 /* NeXT has half-implemented POSIX support *
@@ -846,4 +849,28 @@ extern short ospeed;
 # define GET_ST_CTIME_NSEC(st) (st).st_ctimespec.tv_nsec
 #elif HAVE_STRUCT_STAT_ST_CTIMENSEC
 # define GET_ST_CTIME_NSEC(st) (st).st_ctimensec
+#endif
+
+#if defined(HAVE_TGETENT) && !defined(ZSH_NO_TERM_HANDLING)
+# if defined(ZSH_HAVE_CURSES_H) && defined(ZSH_HAVE_TERM_H)
+#  define USES_TERM_H 1
+# else
+#  ifdef HAVE_TERMCAP_H
+#   define USES_TERMCAP_H 1
+#  endif
+# endif
+
+# ifdef USES_TERM_H
+#  ifdef HAVE_TERMIO_H
+#   include <termio.h>
+#  endif
+#  ifdef ZSH_HAVE_CURSES_H
+#   include "zshcurses.h"
+#  endif
+#  include "zshterm.h"
+# else
+#  ifdef USES_TERMCAP_H
+#   include <termcap.h>
+#  endif
+# endif
 #endif
