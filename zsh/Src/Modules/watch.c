@@ -27,7 +27,7 @@
  *
  */
 
-#include "zsh.mdh"
+#include "watch.mdh"
 
 /* Headers for utmp/utmpx structures */
 #ifdef HAVE_UTMP_H
@@ -139,9 +139,6 @@
 # define DEFAULT_WATCHFMT "%n has %a %l."
 #endif /* !WATCH_UTMP_UT_HOST */
 
-/**/
-char const * const default_watchfmt = DEFAULT_WATCHFMT;
-
 #ifdef WATCH_STRUCT_UTMP
 
 # include "watch.pro"
@@ -152,11 +149,14 @@ char const * const default_watchfmt = DEFAULT_WATCHFMT;
 
 static int wtabsz = 0;
 static WATCH_STRUCT_UTMP *wtab = NULL;
+
+/* the last time we checked the people in the WATCH variable */
+static time_t lastwatch;
+
 static time_t lastutmpcheck = 0;
 
 /* get the time of login/logout for WATCH */
 
-/**/
 static time_t
 getlogtime(WATCH_STRUCT_UTMP *u, int inout)
 {
@@ -169,9 +169,9 @@ getlogtime(WATCH_STRUCT_UTMP *u, int inout)
 	return u->ut_time;
     if (!(in = fopen(WATCH_WTMP_FILE, "r")))
 	return time(NULL);
-    fseek(in, 0, 2);
+    fseek(in, 0, SEEK_END);
     do {
-	if (fseek(in, ((first) ? -1 : -2) * sizeof(WATCH_STRUCT_UTMP), 1)) {
+	if (fseek(in, ((first) ? -1 : -2) * sizeof(WATCH_STRUCT_UTMP), SEEK_CUR)) {
 	    fclose(in);
 	    return time(NULL);
 	}
@@ -202,7 +202,6 @@ getlogtime(WATCH_STRUCT_UTMP *u, int inout)
 # define BEGIN3 '('
 # define END3 ')'
 
-/**/
 static char *
 watch3ary(int inout, WATCH_STRUCT_UTMP *u, char *fmt, int prnt)
 {
@@ -247,6 +246,7 @@ watchlog2(int inout, WATCH_STRUCT_UTMP *u, char *fmt, int prnt, int fini)
     struct tm *tm;
     char *fm2;
     int len;
+    zattr atr;
 # ifdef WATCH_UTMP_UT_HOST
     char *p;
     int i;
@@ -348,6 +348,40 @@ watchlog2(int inout, WATCH_STRUCT_UTMP *u, char *fmt, int prnt, int fini)
 		case '%':
 		    putchar('%');
 		    break;
+		case 'F':
+		    if (*fmt == '{') {
+			fmt++;
+			atr = match_colour((const char**)&fmt, 1, 0);
+			if (*fmt == '}')
+			    fmt++;
+			if (!(atr & (TXT_ERROR | TXTNOFGCOLOUR))) {
+			    txtunset(TXT_ATTR_FG_COL_MASK);
+			    txtset(atr & TXT_ATTR_FG_ON_MASK);
+			    set_colour_attribute(atr, COL_SEQ_FG, TSC_RAW);
+			}
+		    }
+		    break;
+		case 'f':
+		    txtunset(TXT_ATTR_FG_ON_MASK);
+		    set_colour_attribute(TXTNOFGCOLOUR, COL_SEQ_FG, TSC_RAW);
+		    break;
+		case 'K':
+		    if (*fmt == '{') {
+			fmt++;
+			atr = match_colour((const char**)&fmt, 0, 0);
+			if (*fmt == '}')
+			    fmt++;
+			if (!(atr & (TXT_ERROR | TXTNOBGCOLOUR))) {
+			    txtunset(TXT_ATTR_BG_COL_MASK);
+			    txtset(atr & TXT_ATTR_BG_ON_MASK);
+			    set_colour_attribute(atr, COL_SEQ_BG, TSC_RAW);
+			}
+		    }
+		    break;
+		case 'k':
+		    txtunset(TXT_ATTR_BG_ON_MASK);
+		    set_colour_attribute(TXTNOBGCOLOUR, COL_SEQ_BG, TSC_RAW);
+		    break;
 		case 'S':
 		    txtset(TXTSTANDOUT);
 		    tsetcap(TCSTANDOUTBEG, TSC_RAW);
@@ -407,7 +441,6 @@ watchlog_match(char *teststr, char *actual, int len)
 
 /* check the List for login/logouts */
 
-/**/
 static void
 watchlog(int inout, WATCH_STRUCT_UTMP *u, char **w, char *fmt)
 {
@@ -470,7 +503,6 @@ watchlog(int inout, WATCH_STRUCT_UTMP *u, char **w, char *fmt)
 
 /* compare 2 utmp entries */
 
-/**/
 static int
 ucmp(WATCH_STRUCT_UTMP *u, WATCH_STRUCT_UTMP *v)
 {
@@ -481,7 +513,6 @@ ucmp(WATCH_STRUCT_UTMP *u, WATCH_STRUCT_UTMP *v)
 
 /* initialize the user List */
 
-/**/
 static int
 readwtab(WATCH_STRUCT_UTMP **head, int initial_sz)
 {
@@ -592,10 +623,19 @@ dowatch(void)
     wtab = utab;
     wtabsz = utabsz;
     fflush(stdout);
+    lastwatch = time(NULL);
+}
+
+static void
+checksched(void)
+{
+    /* Do nothing if WATCH is not set, or LOGCHECK has not elapsed */
+    if (watch && (int) difftime(time(NULL), lastwatch) > getiparam("LOGCHECK"))
+	dowatch();
 }
 
 /**/
-int
+static int
 bin_log(UNUSED(char *nam), UNUSED(char **argv), UNUSED(Options ops), UNUSED(int func))
 {
     if (!watch)
@@ -611,16 +651,109 @@ bin_log(UNUSED(char *nam), UNUSED(char **argv), UNUSED(Options ops), UNUSED(int 
 
 #else /* !WATCH_STRUCT_UTMP */
 
-/**/
-void dowatch(void)
+static void
+checksched(void)
 {
 }
 
 /**/
-int
+static int
 bin_log(char *nam, char **argv, Options ops, int func)
 {
     return bin_notavail(nam, argv, ops, func);
 }
 
 #endif /* !WATCH_STRUCT_UTMP */
+
+/**/
+static char **watch; /* $watch */
+
+/* module setup */
+
+static struct builtin bintab[] = {
+    BUILTIN("log", 0, bin_log, 0, 0, 0, NULL, NULL),
+};
+
+static struct paramdef partab[] = {
+    PARAMDEF("WATCH", PM_SCALAR|PM_SPECIAL, &watch, NULL),
+    PARAMDEF("watch", PM_ARRAY|PM_SPECIAL, &watch, NULL),
+};
+
+static struct features module_features = {
+    bintab, sizeof(bintab)/sizeof(*bintab),
+    NULL, 0,
+    NULL, 0,
+    partab, sizeof(partab)/sizeof(*partab),
+    0
+};
+
+/**/
+int
+setup_(UNUSED(Module m))
+{
+    /* On Cygwin, colonarr_gsu exists in libzsh.dll and we can't
+     * use &colonarr_gsu in the initialization of partab[] above */
+    partab[0].gsu = (void *)&colonarr_gsu;
+    partab[1].gsu = (void *)&vararray_gsu;
+    return 0;
+}
+
+/**/
+int
+features_(Module m, char ***features)
+{
+    *features = featuresarray(m, &module_features);
+    return 0;
+}
+
+/**/
+int
+enables_(Module m, int **enables)
+{
+    return handlefeatures(m, &module_features, enables);
+}
+
+/**/
+int
+boot_(UNUSED(Module m))
+{
+    static char const * const default_watchfmt = DEFAULT_WATCHFMT;
+
+    Param pma = (Param) paramtab->getnode(paramtab, "watch");
+    Param pms = (Param) paramtab->getnode(paramtab, "WATCH");
+    if (pma && pms && pma->u.arr == watch && pms->u.arr == watch) {
+	/* only tie the two parameters if both were added */
+	pma->ename = "WATCH";
+	pms->ename = "watch";
+	pma->node.flags |= PM_TIED;
+	pms->node.flags |= PM_TIED;
+    }
+    watch = mkarray(NULL);
+
+    /* These two parameters are only set to defaults if not set.
+     * So setting them in .zshrc will not be enough to load the
+     * module. It's useless until the watch array is set anyway. */
+    if (!paramtab->getnode(paramtab, "WATCHFMT"))
+	setsparam("WATCHFMT", ztrdup_metafy(default_watchfmt));
+    if (!paramtab->getnode(paramtab, "LOGCHECK"))
+	setiparam("LOGCHECK", 60);
+
+    addprepromptfn(&checksched);
+
+    return 0;
+}
+
+/**/
+int
+cleanup_(Module m)
+{
+    delprepromptfn(&checksched);
+    return setfeatureenables(m, &module_features, NULL);
+}
+
+/**/
+int
+finish_(UNUSED(Module m))
+{
+    return 0;
+}
