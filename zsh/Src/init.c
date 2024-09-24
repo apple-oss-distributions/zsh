@@ -39,6 +39,19 @@
 #ifdef __APPLE__
 #include <System/sys/codesign.h>
 #include <TargetConditionals.h>
+
+#if defined(__arm64__)
+
+#undef MACHTYPE
+#define MACHTYPE "arm64"
+
+#elif defined(__x86_64__)
+
+#undef MACHTYPE
+#define MACHTYPE "x86_64"
+
+#endif
+
 #endif /* __APPLE__
 
 /**/
@@ -1336,8 +1349,13 @@ run_init_scripts(void)
 	    source("/etc/suid_profile");
 #endif // __APPLE__ && TARGET_OS_OSX
     } else {
-int restrict_source = 0;
+	int restrict_source = 0;
 #ifdef __APPLE__
+	char *restricted_env = getenv("APPLE_PKGKIT_ESCALATING_ROOT");
+	if (restricted_env) {
+	    restrict_source = 1;
+	}
+
 	uint32_t flags = 0;
 	if (!csops(getpid(), CS_OPS_STATUS, &flags, sizeof(flags))) {
 		if (flags & CS_INSTALLER) {
